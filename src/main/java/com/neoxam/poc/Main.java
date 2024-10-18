@@ -45,16 +45,16 @@ public class Main {
 
     public static void main(String[] args) {
         if (args.length < 5) {
-            System.out.println("Wrong input, must be: API_KEY HOST PORT TICKER1;TICKER2...  FIELD1;FIELD2....");
+            System.out.println("Wrong input, must be: APP_NAME HOST PORT TICKER1;TICKER2...  FIELD1;FIELD2....");
             return;
         }
-        String apiKey, host;
+        String appName, host;
         String[] tickers;
         String[] fields;
         Integer port;
         // Parse args
         try {
-            apiKey = args[0];
+            appName = args[0];
             host = args[1];
             port = Integer.parseInt(args[2]);
             tickers = args[3].split(";");
@@ -72,8 +72,7 @@ public class Main {
         }
 
         SessionOptions sessionOptions = new SessionOptions();
-        // TODO: add session authentication options here
-        sessionOptions.setApplicationIdentityKey(apiKey);
+        sessionOptions.setAuthenticationOptions(String.format("AuthenticationMode=APPLICATION_ONLY;ApplicationAuthenticationType=APPNAME_AND_KEY;ApplicationName=%s", appName));
         sessionOptions.setServerHost(host);
         sessionOptions.setServerPort(port);// default is 8194;
 
