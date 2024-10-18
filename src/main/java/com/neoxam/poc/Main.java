@@ -72,7 +72,6 @@ public class Main {
         }
 
         SessionOptions sessionOptions = new SessionOptions();
-        // TODO: add session authentication options here
         sessionOptions.setApplicationIdentityKey(apiKey);
         sessionOptions.setServerHost(host);
         sessionOptions.setServerPort(port);// default is 8194;
