@@ -1,0 +1,1 @@
+java -cp "target\classes;target\classes\BEmu.jar" com.neoxam.poc.Main "SPY US EQUITY" "LAST_TRADE;LAST_TRADE_SIZE"
