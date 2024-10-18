@@ -14,7 +14,7 @@
             <artifactId>blpapi</artifactId>
             <version>1.0</version>
             <scope>system</scope>
-            <systemPath>${project.basedir}/src/main/resources/BEmu.jar</systemPath>
+            <systemPath>${project.basedir}/src/main/resources/blpapi-3.24.9-1.jar</systemPath>
         </dependency>
 
     </dependencies>

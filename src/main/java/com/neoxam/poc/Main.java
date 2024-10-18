@@ -3,8 +3,9 @@ package com.neoxam.poc;
 import com.bloomberglp.blpapi.Element;
 import com.bloomberglp.blpapi.Event;
 import com.bloomberglp.blpapi.Message;
-import com.bloomberglp.blpapi.MessageIterator;
 import com.bloomberglp.blpapi.Name;
+
+import com.bloomberglp.blpapi.Names;
 import com.bloomberglp.blpapi.Request;
 import com.bloomberglp.blpapi.Service;
 import com.bloomberglp.blpapi.Session;
@@ -43,34 +44,42 @@ public class Main {
     Map<String, Map<String, String>> dataMap = new TreeMap<>();
 
     public static void main(String[] args) {
-        if (args.length == 0) {
-            System.out.println("Wrong input, must be: TICKER1;TICKER2...  FIELD1;FIELD2....");
+        if (args.length < 5) {
+            System.out.println("Wrong input, must be: API_KEY HOST PORT TICKER1;TICKER2...  FIELD1;FIELD2....");
             return;
         }
+        String apiKey, host;
+        String[] tickers;
+        String[] fields;
+        Integer port;
         // Parse args
-        String[] tickers = args[0].split(";");
-        String[] fields = args[1].split(";");
+        try {
+            apiKey = args[0];
+            host = args[1];
+            port = Integer.parseInt(args[2]);
+            tickers = args[3].split(";");
+            fields = args[4].split(";");
 
-        if (tickers.length == 0 || fields.length == 0) {
+            if (tickers.length == 0 || fields.length == 0) {
+                System.out.println("Wrong input, must be: TICKER1;TICKER2...  FIELD1;FIELD2....");
+                return;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
             System.out.println("Wrong input, must be: TICKER1;TICKER2...  FIELD1;FIELD2....");
             return;
+
         }
 
         SessionOptions sessionOptions = new SessionOptions();
-
         // TODO: add session authentication options here
-//        sessionOptions.setApplicationIdentityKey("");
-        sessionOptions.setServerHost("127.0.0.1");
-        sessionOptions.setServerPort(8194);// default is 8194;
+        sessionOptions.setApplicationIdentityKey(apiKey);
+        sessionOptions.setServerHost(host);
+        sessionOptions.setServerPort(port);// default is 8194;
 
         Session session = new Session(sessionOptions);
         try {
-            if (!session.start()) {
-                System.err.println("Failed to start session.");
-                checkFailures(session);
-                return;
-            }
-            if (!session.openService(BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY)) {
+            if (!session.start() || !session.openService(BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY)) {
                 checkFailures(session);
                 return;
             }
@@ -78,32 +87,29 @@ public class Main {
             // Send request
             Service service = session.getService(BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY);
             Request request = createRequest(service, tickers, fields);
-            //System.out.println("Sending Request " + request.getRequestId() + ": " + request);
+            System.out.println("Sending Request " + request.getRequestId() + ": " + request);
             session.sendRequest(request, null); // correlationId
 
             // Treat response
             waitForResponse(session);
             createCSV(dataMap);
+            session.stop();
         } catch (Exception e) {
             e.printStackTrace();
-        } finally {
-            session.stop();
         }
     }
 
-    public static Request createRequest(Service service, String[] tickers, String[] fields) throws Exception {
+    public static Request createRequest(Service service, String[] tickers, String[] fields) {
         Request request = service.createRequest(REFERENCE_DATA_REQUEST);
         // Add securities to request
         Element securitiesElement = request.getElement(SECURITIES);
         for (String security : tickers) {
-            //securitiesElement.appendValue(security);
-            request.append("securities", security);
+            securitiesElement.appendValue(security);
         }
         // Add fields to request
         Element fieldsElement = request.getElement(FIELDS);
         for (String field : fields) {
-//            fieldsElement.appendValue(field);
-            request.append("fields", field);
+            fieldsElement.appendValue(field);
         }
         return request;
     }
@@ -121,14 +127,9 @@ public class Main {
                 processResponseEvent(event);
                 done = true;
             } else if (eventType == Event.EventType.REQUEST_STATUS) {
-                //for (Message msg : event) {
-                MessageIterator miter = event.messageIterator();
-                while (miter.hasNext()) {
-                    Message msg = miter.next();
-                    System.out.println(msg);
-
-//                    if (msg.messageType().equals(Names.REQUEST_FAILURE)) {
-                    if (msg.messageType().equals(Name.getName("RequestFailure"))) {
+                for (Message msg : event) {
+                    System.out.println("Received request status message:" + msg);
+                    if (msg.messageType().equals(Names.REQUEST_FAILURE)) {
                         Element reason = msg.getElement(REASON);
                         System.err.println("Request failed: " + reason);
                         done = true;
@@ -144,16 +145,13 @@ public class Main {
         }
     }
 
-    public static void processResponseEvent(Event event) throws Exception {
-        //for (Message msg : event) {
-        MessageIterator miter = event.messageIterator();
-        while (miter.hasNext()) {
-            Message msg = miter.next();
-            //System.out.println("Received response to request " + msg.getRequestId());
-//            if (msg.hasElement(RESPONSE_ERROR)) {
-//                System.out.println("REQUEST FAILED: " + msg.getElement(RESPONSE_ERROR));
-//                continue;
-//            }
+    public static void processResponseEvent(Event event) {
+        for (Message msg : event) {
+            System.out.println("Received response to request " + msg.getRequestId());
+            if (msg.hasElement(RESPONSE_ERROR)) {
+                System.out.println("REQUEST FAILED: " + msg.getElement(RESPONSE_ERROR));
+                continue;
+            }
 
             Element securities = msg.getElement(SECURITY_DATA);
             int numSecurities = securities.numValues();
@@ -173,23 +171,23 @@ public class Main {
                     getDataFromElements(ticker, fields);
                 }
                 System.out.println();
-//                Element fieldExceptions = security.getElement(FIELD_EXCEPTIONS);
-//                if (fieldExceptions.numValues() > 0) {
-//                    System.out.println("FIELD\t\tEXCEPTION");
-//                    System.out.println("-----\t\t---------");
-//                    for (int k = 0; k < fieldExceptions.numValues(); ++k) {
-//                        Element fieldException = fieldExceptions.getValueAsElement(k);
-//                        System.out.println(
-//                                fieldException.getElementAsString(FIELD_ID)
-//                                        + "\t\t"
-//                                        + fieldException.getElement(ERROR_INFO));
-//                    }
-//                }
+                Element fieldExceptions = security.getElement(FIELD_EXCEPTIONS);
+                if (fieldExceptions.numValues() > 0) {
+                    System.out.println("FIELD\t\tEXCEPTION");
+                    System.out.println("-----\t\t---------");
+                    for (int k = 0; k < fieldExceptions.numValues(); ++k) {
+                        Element fieldException = fieldExceptions.getValueAsElement(k);
+                        System.out.println(
+                                fieldException.getElementAsString(FIELD_ID)
+                                        + "\t\t"
+                                        + fieldException.getElement(ERROR_INFO));
+                    }
+                }
             }
         }
     }
 
-    private static void getDataFromElements(String ticker, Element fields) throws Exception {
+    private static void getDataFromElements(String ticker, Element fields) {
         Map<String, String> fieldMap;
         if (dataMap.containsKey(ticker)) {
             fieldMap = dataMap.get(ticker);
@@ -203,18 +201,15 @@ public class Main {
             int numElements = fields.numElements();
             for (int j = 0; j < numElements; ++j) {
                 Element field = fields.getElement(j);
-                System.out.println(field.name() + "\t\t" + field.getValue());
-//                fieldMap.put(field.name().toString(), field.getValueAsString());
-                fieldMap.put(field.name().toString(), field.getValue().toString());
+                fieldMap.put(field.name().toString(), field.getValueAsString());
             }
         }
 
     }
 
-    private static void checkFailures(Session session) throws Exception {
+    private static void checkFailures(Session session) {
         while (true) {
-//            Event event = session.tryNextEvent();
-            Event event = session.nextEvent();
+            Event event = session.tryNextEvent();
             if (event == null) {
                 break;
             }
@@ -224,26 +219,20 @@ public class Main {
         }
     }
 
-    private static boolean processGenericEvent(Event event) throws Exception {
+    private static boolean processGenericEvent(Event event) {
         Event.EventType eventType = event.eventType();
-        // for (Message msg : event) {
-        MessageIterator miter = event.messageIterator();
-        while (miter.hasNext()) {
-            Message msg = miter.next();
+        for (Message msg : event) {
             System.out.println(msg);
-
             Name messageType = msg.messageType();
             if (eventType == Event.EventType.SESSION_STATUS) {
-                //if (messageType.equals(Names.SESSION_TERMINATED)
-                if (messageType.equals(Name.getName("SessionTerminated"))
+                if (messageType.equals(Names.SESSION_TERMINATED)
                         || messageType.equals(Name.getName("SessionStartupFailure"))) {
-                    System.err.println("Session failed to start or terminated.");
+                    System.err.println("Failed to start session or session terminated.");
                     return true;
                 }
             } else if (eventType == Event.EventType.SERVICE_STATUS) {
-                if (messageType.equals(Name.getName("ServiceOpenFailure"))) {
-                    String serviceName = msg.getElementAsString(BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY);
-                    System.err.println("Failed to open " + serviceName + ".");
+                if (messageType.equals(Names.SERVICE_OPEN_FAILURE)) {
+                    System.err.println("Failed to open service " + BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY + ".");
                 }
             }
         }
