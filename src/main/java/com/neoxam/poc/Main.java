@@ -1,7 +1,10 @@
 package com.neoxam.poc;
 
+import com.bloomberglp.blpapi.CorrelationID;
 import com.bloomberglp.blpapi.Element;
 import com.bloomberglp.blpapi.Event;
+import com.bloomberglp.blpapi.EventQueue;
+import com.bloomberglp.blpapi.Identity;
 import com.bloomberglp.blpapi.Message;
 import com.bloomberglp.blpapi.Name;
 
@@ -20,6 +23,8 @@ import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 public class Main {
+
+    private static final String BLOOMBERG_AUTH_SERVICE_NAME_PROPERTY = "//blp/apiauth";
     private static final String BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY = "//blp/refdata";
 
     private static final String REFERENCE_DATA_REQUEST = "ReferenceDataRequest";
@@ -42,6 +47,8 @@ public class Main {
     // Init data map
     private static final
     Map<String, Map<String, String>> dataMap = new TreeMap<>();
+
+    public static Identity appIdentity= null;
 
     public static void main(String[] args) {
         if (args.length < 5) {
@@ -72,25 +79,42 @@ public class Main {
         }
 
         SessionOptions sessionOptions = new SessionOptions();
-        sessionOptions.setAuthenticationOptions(String.format("AuthenticationMode=APPLICATION_ONLY;ApplicationAuthenticationType=APPNAME_AND_KEY;ApplicationName=%s", appName));
+        String authOptions = String.format("AuthenticationMode=APPLICATION_ONLY;ApplicationAuthenticationType=APPNAME_AND_KEY;ApplicationName=%s", appName);
+        sessionOptions.setAuthenticationOptions(authOptions);
         sessionOptions.setServerHost(host);
         sessionOptions.setServerPort(port);// default is 8194;
 
         Session session = new Session(sessionOptions);
         try {
-            if (!session.start() || !session.openService(BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY)) {
+            if (!session.start()) {
+                //|| !session.openService(BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY)) {
                 checkFailures(session);
                 return;
             }
+            if (!session.openService(BLOOMBERG_AUTH_SERVICE_NAME_PROPERTY)) {
+                System.err.println("Failed to open authentication service: " + BLOOMBERG_AUTH_SERVICE_NAME_PROPERTY);
+                checkFailures(session);
+                return;
 
-            // Send request
+            }
+
+            if (!authorizeApplication(session)) {
+                return;
+            }
+
+            // Send data request
+            if (!session.openService(BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY)) {
+                checkFailures(session);
+                return;
+            }
             Service service = session.getService(BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY);
-            Request request = createRequest(service, tickers, fields);
-            System.out.println("Sending Request " + request.getRequestId() + ": " + request);
-            session.sendRequest(request, null); // correlationId
+            Request dataRequest = createDataRequest(service, tickers, fields);
+            System.out.println("Sending data Request " + dataRequest.getRequestId() + ": " + dataRequest);
+            EventQueue eventQueue = new EventQueue();
+            session.sendRequest(dataRequest, appIdentity, eventQueue, null); // correlationId
 
             // Treat response
-            waitForResponse(session);
+            waitForResponse(session, eventQueue);
             createCSV(dataMap);
             session.stop();
         } catch (Exception e) {
@@ -98,7 +122,7 @@ public class Main {
         }
     }
 
-    public static Request createRequest(Service service, String[] tickers, String[] fields) {
+    public static Request createDataRequest(Service service, String[] tickers, String[] fields) {
         Request request = service.createRequest(REFERENCE_DATA_REQUEST);
         // Add securities to request
         Element securitiesElement = request.getElement(SECURITIES);
@@ -113,10 +137,68 @@ public class Main {
         return request;
     }
 
-    private static void waitForResponse(Session session) throws Exception {
+    private static boolean authorizeApplication(Session session) throws Exception {
+        EventQueue eventQueue = new EventQueue();
+        CorrelationID correlationID = new CorrelationID(99);
+        session.generateToken(correlationID, eventQueue);
+        String token = null;
+        int timeoutInMillis = 10000;
+
+        Event event = eventQueue.nextEvent(timeoutInMillis);
+        if (event.eventType() == Event.EventType.TOKEN_STATUS) {
+            for (Message msg : event) {
+                System.err.println("Authorization msg is: " + msg);
+                if (msg.messageType() == Names.TOKEN_GENERATION_SUCCESS) {
+                    token = msg.getElementAsString(Name.getName("token"));
+                    break;
+                }
+            }
+
+        }
+        if (token == null) {
+            System.err.println("Authentication failed because of token generation failure");
+            return false;
+        }
+
+        Service authService = session.getService(BLOOMBERG_AUTH_SERVICE_NAME_PROPERTY);
+        Request authRequest = authService.createAuthorizationRequest();
+        authRequest.set(Name.getName("token"), token);
+        EventQueue authEventQueue = new EventQueue();
+        appIdentity = session.createIdentity();
+        session.sendAuthorizationRequest(authRequest, appIdentity, authEventQueue, new CorrelationID(appIdentity));
+        //session.sendAuthorizationRequest(authRequest,appIdentity,new CorrelationID(appIdentity));
+
+        while (true) {
+            Event authEvent = authEventQueue.nextEvent();
+            if (authEvent.eventType() == Event.EventType.RESPONSE
+                    || authEvent.eventType() == Event.EventType.PARTIAL_RESPONSE
+                    || authEvent.eventType() == Event.EventType.REQUEST_STATUS) {
+                for (Message msg : authEvent) {
+                    if (msg.messageType() == Names.AUTHORIZATION_SUCCESS) {
+                        System.err.println("Authorization Success:");
+                        System.err.println(msg);
+
+                        return true;
+                    } else {
+                        System.out.println("Authorization Failure");
+                        System.err.println(msg);
+                        return false;
+                    }
+                }
+
+            }
+        }
+
+    }
+
+    private static void waitForResponse(Session session, EventQueue eventQueue) throws Exception {
         boolean done = false;
+        int timeoutInMillis = 10000;
         while (!done) {
-            Event event = session.nextEvent();
+            Event event = eventQueue.nextEvent(timeoutInMillis);
+            if (event == null) {
+                continue;
+            }
             Event.EventType eventType = event.eventType();
             if (eventType == Event.EventType.PARTIAL_RESPONSE) {
                 System.out.println("Processing Partial Response");
@@ -231,11 +313,14 @@ public class Main {
                 }
             } else if (eventType == Event.EventType.SERVICE_STATUS) {
                 if (messageType.equals(Names.SERVICE_OPEN_FAILURE)) {
-                    System.err.println("Failed to open service " + BLOOMBERG_REF_DATA_SERVICE_NAME_PROPERTY + ".");
+                    System.err.println("Failed to open service: " + msg + ".");
+                }
+            } else if (eventType == Event.EventType.AUTHORIZATION_STATUS) {
+                if (messageType.equals(Names.AUTHORIZATION_FAILURE)) {
+                    System.err.println("Authorization failed: " + msg + ".");
                 }
             }
         }
-
         return false;
     }
 
